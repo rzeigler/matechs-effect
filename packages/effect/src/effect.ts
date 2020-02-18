@@ -318,9 +318,13 @@ export interface Suspended {
   readonly f0: Lazy<Instructions>;
 }
 
+export type AsyncContFn<E, A> = FunctionN<[Either<E, A>], void>;
+export type AsyncCancelContFn = FunctionN<[Lazy<void>], void>;
+export type AsyncFn<E, A> = FunctionN<[AsyncContFn<E, A>], AsyncCancelContFn>;
+
 export interface Async<E = unknown, A = unknown> {
   readonly _tag: EffectTag.Async;
-  readonly f0: FunctionN<[FunctionN<[Either<E, A>], void>], Lazy<void>>;
+  readonly f0: AsyncFn<E, A>;
 }
 
 export interface Chain<Z = unknown> {

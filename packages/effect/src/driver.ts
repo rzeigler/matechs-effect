@@ -93,6 +93,43 @@ export interface Driver<E, A> {
   completed: Exit<E, A> | null;
 }
 
+
+class ContextSwitch {
+  private complete: boolean = false;
+  private cancel: T.AsyncCancelContFn = () => {};
+  constructor(private readonly resumeSuccess: FunctionN<[Either<unknown, unknown>], void>, 
+              private readonly resumeInterrupt: Lazy<void>, 
+              private readonly asyncFn: T.AsyncFn<unknown, unknown>) {
+
+  }
+
+  public dispatch() {
+    this.cancel = this.asyncFn((result) => this.onSuccess(result));
+  }
+
+  public interrupt() {
+    this.cancel(() => this.onInterrupt());
+  }
+
+  private onSuccess(result: Either<unknown, unknown>): void {
+    if (this.complete) {
+      console.warn("multiple completions during context switch");
+      return;
+    }
+    this.complete = true;
+    this.resumeSuccess(result);
+  }
+
+  private onInterrupt(): void {
+    if (this.complete) {
+      console.warn("multiple completions during context switch");
+      return;
+    }
+    this.complete = true;
+    this.resumeInterrupt();
+  }
+}
+
 export class DriverImpl<E, A> implements Driver<E, A> {
   completed: Exit<E, A> | null = null;
   listeners: FunctionN<[Exit<E, A>], void>[] | undefined;
@@ -101,7 +138,7 @@ export class DriverImpl<E, A> implements Driver<E, A> {
   interrupted = false;
   currentFrame: FrameType | undefined = undefined;
   interruptRegionStack: boolean[] | undefined;
-  cancelAsync: Lazy<void> | undefined;
+  pending: ContextSwitch | undefined;
   envStack = L.empty<any>();
 
   constructor(readonly runtime: Runtime = defaultRuntime) {}
@@ -187,6 +224,7 @@ export class DriverImpl<E, A> implements Driver<E, A> {
   }
 
   resumeInterrupt(): void {
+    this.pending = undefined;
     this.runtime.dispatch(this.dispatchResumeInterrupt.bind(this), undefined);
   }
 
@@ -231,25 +269,15 @@ export class DriverImpl<E, A> implements Driver<E, A> {
   }
 
   resume(status: Either<unknown, unknown>): void {
-    this.cancelAsync = undefined;
+    this.pending = undefined;
     this.runtime.dispatch(this.foldResume.bind(this), status);
   }
 
   contextSwitch(
-    op: FunctionN<[FunctionN<[Either<unknown, unknown>], void>], Lazy<void>>
+    op: T.AsyncFn<unknown, unknown>
   ): void {
-    let complete = false;
-    const wrappedCancel = op(status => {
-      if (complete) {
-        return;
-      }
-      complete = true;
-      this.resume(status);
-    });
-    this.cancelAsync = () => {
-      complete = true;
-      wrappedCancel();
-    };
+    this.pending = new ContextSwitch((r) => this.resume(r), () => this.resumeInterrupt(), op);
+    this.pending.dispatch();
   }
 
   // tslint:disable-next-line: cyclomatic-complexity
@@ -389,9 +417,9 @@ export class DriverImpl<E, A> implements Driver<E, A> {
       return;
     }
     this.interrupted = true;
-    if (this.cancelAsync && this.isInterruptible()) {
-      this.cancelAsync();
-      this.resumeInterrupt();
+    if (this.pending && this.isInterruptible()) {
+      this.pending.interrupt();
+      
     }
   }
 }
